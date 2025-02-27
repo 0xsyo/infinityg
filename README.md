@@ -1,4 +1,5 @@
 # InfinityG Bot
+<a href="https://www.infinityg.ai/voyage" target="_blank" rel="noopener noreferrer">https://www.infinityg.ai/voyage</a>
 
 ## Description
 
