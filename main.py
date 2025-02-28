@@ -195,6 +195,51 @@ def claim_task_reward(token, proxy, user_agent, task_id):
         print(Fore.RED + f"Error: {e}")
         return None
 
+# Check-in function
+def perform_checkin(token, proxy, user_agent):
+    url = "https://api.infinityg.ai/api/v1/task/checkIn/"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": user_agent,
+        "Origin": "https://www.infinityg.ai",
+        "Referer": "https://www.infinityg.ai/",
+        "Content-Type": "application/json",
+    }
+    proxies = {}
+    if proxy:
+        if proxy.startswith('http'):
+            proxies['http'] = proxy
+            proxies['https'] = proxy
+        elif proxy.startswith('socks4') or proxy.startswith('socks5'):
+            proxies['http'] = proxy
+            proxies['https'] = proxy
+    try:
+        response = requests.post(url, headers=headers, proxies=proxies if proxy else None)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(Fore.RED + f"Failed to check in: {response.status_code}")
+            return None
+    except Exception as e:
+        print(Fore.RED + f"Error: {e}")
+        return None
+
+# Check if already checked in today
+def is_already_checked_in(task_list):
+    if not task_list or task_list.get("code") != "90000" or "checkInList" not in task_list.get("data", {}):
+        return False
+    
+    check_in_list = task_list["data"]["checkInList"]
+    for check_in in check_in_list:
+        # Check if today's check-in exists and status is 1 (completed)
+        if "date" in check_in and "status" in check_in:
+            # Get current date in the format YYYY-MM-DD
+            import datetime
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            if check_in["date"] == today and check_in["status"] == 1:
+                return True
+    return False
+
 # Display user info in the desired format
 def display_user_info(user_info):
     print(Fore.CYAN + "━" * 50)
@@ -212,6 +257,18 @@ def display_countdown(seconds):
         print(Fore.YELLOW + f"Waiting for {i} seconds...", end="\r")
         time.sleep(1)
     print(Fore.YELLOW + " " * 30, end="\r")  # Clear the line
+
+# Display check-in status
+def display_checkin_status(task_list):
+    if not task_list or task_list.get("code") != "90000" or "checkInList" not in task_list.get("data", {}):
+        return
+    
+    check_in_list = task_list["data"]["checkInList"]
+    print(Fore.MAGENTA + "\nCheck-in Status:")
+    for check_in in check_in_list:
+        status = "Completed" if check_in["status"] == 1 else "Pending"
+        status_color = Fore.GREEN if check_in["status"] == 1 else Fore.YELLOW
+        print(f"{Fore.CYAN}Date: {check_in['date']} | Day: {check_in['checkInNo']} | Points: {check_in['point']} | Status: {status_color}{status}")
 
 # Main function
 def main():
@@ -257,6 +314,30 @@ def main():
 
         # Fetch task list
         task_list = get_task_list(token, proxy, user_agent)
+        
+        # Check-in process
+        if task_list and task_list.get("code") == "90000":
+            display_checkin_status(task_list)
+            
+            # Check if already checked in today
+            if is_already_checked_in(task_list):
+                print(Fore.GREEN + "Already checked in today!")
+            else:
+                print(Fore.YELLOW + "Performing daily check-in...")
+                check_in_result = perform_checkin(token, proxy, user_agent)
+                if check_in_result and check_in_result.get("code") == "90000":
+                    print(Fore.GREEN + "Check-in successful!")
+                    # Delay after check-in
+                    checkin_delay = random.randint(2, 5)
+                    display_countdown(checkin_delay)
+                    # Refresh task list to show updated check-in status
+                    task_list = get_task_list(token, proxy, user_agent)
+                    if task_list and task_list.get("code") == "90000":
+                        display_checkin_status(task_list)
+                else:
+                    print(Fore.RED + "Failed to check in.")
+        
+        # Process tasks
         if task_list and task_list.get("code") == "90000":
             for task_group in task_list["data"]["taskModelResponses"]:
                 print(Fore.MAGENTA + f"Task Group: {task_group['taskModelName']}")
