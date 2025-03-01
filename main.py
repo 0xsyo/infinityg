@@ -5,6 +5,7 @@ import requests
 import json
 from colorama import Fore, Style, init
 from fake_useragent import UserAgent
+from web3 import Web3
 
 # Initialize colorama
 init(autoreset=True)
@@ -31,20 +32,25 @@ def rainbow_banner():
         print(colors[i % len(colors)] + char, end="")
     print(Fore.LIGHTYELLOW_EX)
 
-# Load tokens from token.txt
-def load_tokens():
-    if not os.path.exists('token.txt'):
-        print(Fore.RED + "token.txt not found!")
+# Load private keys from pk.txt
+def load_private_keys():
+    if not os.path.exists('pk.txt'):
+        print(Fore.RED + "pk.txt not found!")
         exit()
-    with open('token.txt', 'r') as f:
-        tokens = f.read().splitlines()
-    return tokens
+    with open('pk.txt', 'r') as f:
+        private_keys = f.read().splitlines()
+    return private_keys
 
-# Save tokens to token.txt
-def save_tokens(tokens):
-    with open('token.txt', 'w') as f:
-        for token in tokens:
-            f.write(token + '\n')
+# Save tokens to tokens.json
+def save_token(wallet_address, token):
+    try:
+        with open('tokens.json', 'r') as f:
+            tokens = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        tokens = {}
+    tokens[wallet_address] = token
+    with open('tokens.json', 'w') as f:
+        json.dump(tokens, f, indent=4)
 
 # Load proxies from proxy.txt
 def load_proxies():
@@ -54,50 +60,105 @@ def load_proxies():
             proxies = f.read().splitlines()
     return proxies
 
-# Save proxies to proxy.txt
-def save_proxies(proxies):
-    with open('proxy.txt', 'w') as f:
-        for proxy in proxies:
-            f.write(proxy + '\n')
+# Get random proxy
+def get_proxy():
+    proxies = load_proxies()
+    if proxies:
+        proxy = random.choice(proxies)
+        return proxy
+    return None
 
-# Load headers from headers.json
-def load_headers():
-    if os.path.exists('headers.json'):
+# Format proxy for requests
+def format_proxy(proxy):
+    if not proxy:
+        return None
+    proxies = {}
+    if proxy.startswith('http'):
+        proxies['http'] = proxy
+        proxies['https'] = proxy
+    elif proxy.startswith('socks4') or proxy.startswith('socks5'):
+        proxies['http'] = proxy
+        proxies['https'] = proxy
+    return proxies if proxies else None
+
+# Generate or get headers for wallet
+def get_headers(wallet_address):
+    try:
         with open('headers.json', 'r') as f:
             headers = json.load(f)
-    else:
+            if wallet_address in headers:
+                return headers[wallet_address]
+    except (FileNotFoundError, json.JSONDecodeError):
         headers = {}
-    return headers
-
-# Save headers to headers.json
-def save_headers(headers):
+    
+    # Generate new headers
+    ua = UserAgent()
+    new_headers = {
+        'User-Agent': ua.random,
+        'Accept': '*/*',
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
+        'Accept-Language': 'id-ID,id;q=0.5',
+        'Content-Type': 'application/json',
+        'Origin': 'https://www.infinityg.ai',
+        'Referer': 'https://www.infinityg.ai/',
+    }
+    
+    # Save to headers.json
+    headers[wallet_address] = new_headers
     with open('headers.json', 'w') as f:
         json.dump(headers, f, indent=4)
+    
+    return new_headers
 
-# Generate random User-Agent
-def generate_user_agent():
-    ua = UserAgent()
-    return ua.random
+# Login with wallet and get token
+def login_and_get_token(private_key):
+    url = 'https://api.infinityg.ai/api/v1/user/auth/wallet_login'
+    # Derive wallet address from private key using web3.py
+    w3 = Web3()
+    account = w3.eth.account.from_key(private_key)
+    wallet_address = account.address
+    
+    payload = {
+        "loginChannel": "MAIN_PAGE",
+        "walletChain": "Ethereum",
+        "walletType": "metamask",
+        "walletAddress": wallet_address
+    }
+    
+    headers = get_headers(wallet_address)
+    proxy = get_proxy()
+    proxies = format_proxy(proxy)
+    
+    print(Fore.CYAN + f"Attempting login for wallet: {wallet_address[:10]}...")
+    print(Fore.CYAN + f"Using Proxy: {proxy if proxy else 'None'}")
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers, proxies=proxies)
+        if response.status_code == 200 and response.json().get('code') == '90000':
+            print(Fore.GREEN + "Login successful.")
+            token = response.json().get('data', {}).get('token')
+            if token:
+                save_token(wallet_address, token)
+                return token, wallet_address, headers
+            else:
+                print(Fore.RED + "Token not found in response.")
+        else:
+            print(Fore.RED + f"Login failed with status code {response.status_code}. Response: {response.text}")
+    except Exception as e:
+        print(Fore.RED + f"Error during login: {e}")
+    
+    return None, wallet_address, headers
 
 # Get user info
-def get_user_info(token, proxy, user_agent):
+def get_user_info(token, headers, proxy):
     url = "https://api.infinityg.ai/api/v1/user/info/query"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": user_agent,
-        "Origin": "https://www.infinityg.ai",
-        "Referer": "https://www.infinityg.ai/",
-    }
-    proxies = {}
-    if proxy:
-        if proxy.startswith('http'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
-        elif proxy.startswith('socks4') or proxy.startswith('socks5'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
+    auth_headers = headers.copy()
+    auth_headers["Authorization"] = f"Bearer {token}"
+    
+    proxies = format_proxy(proxy)
+    
     try:
-        response = requests.post(url, headers=headers, proxies=proxies if proxy else None)
+        response = requests.post(url, headers=auth_headers, proxies=proxies)
         if response.status_code == 200:
             return response.json()
         else:
@@ -108,24 +169,15 @@ def get_user_info(token, proxy, user_agent):
         return None
 
 # Get task list
-def get_task_list(token, proxy, user_agent):
+def get_task_list(token, headers, proxy):
     url = "https://api.infinityg.ai/api/v1/task/list"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": user_agent,
-        "Origin": "https://www.infinityg.ai",
-        "Referer": "https://www.infinityg.ai/",
-    }
-    proxies = {}
-    if proxy:
-        if proxy.startswith('http'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
-        elif proxy.startswith('socks4') or proxy.startswith('socks5'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
+    auth_headers = headers.copy()
+    auth_headers["Authorization"] = f"Bearer {token}"
+    
+    proxies = format_proxy(proxy)
+    
     try:
-        response = requests.post(url, headers=headers, proxies=proxies if proxy else None)
+        response = requests.post(url, headers=auth_headers, proxies=proxies)
         if response.status_code == 200:
             return response.json()
         else:
@@ -136,26 +188,16 @@ def get_task_list(token, proxy, user_agent):
         return None
 
 # Complete a task
-def complete_task(token, proxy, user_agent, task_id):
+def complete_task(token, headers, proxy, task_id):
     url = "https://api.infinityg.ai/api/v1/task/complete"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": user_agent,
-        "Origin": "https://www.infinityg.ai",
-        "Referer": "https://www.infinityg.ai/",
-        "Content-Type": "application/json",
-    }
+    auth_headers = headers.copy()
+    auth_headers["Authorization"] = f"Bearer {token}"
+    
     payload = {"taskId": task_id}
-    proxies = {}
-    if proxy:
-        if proxy.startswith('http'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
-        elif proxy.startswith('socks4') or proxy.startswith('socks5'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
+    proxies = format_proxy(proxy)
+    
     try:
-        response = requests.post(url, headers=headers, json=payload, proxies=proxies if proxy else None)
+        response = requests.post(url, headers=auth_headers, json=payload, proxies=proxies)
         if response.status_code == 200:
             return response.json()
         else:
@@ -166,26 +208,16 @@ def complete_task(token, proxy, user_agent, task_id):
         return None
 
 # Claim task reward
-def claim_task_reward(token, proxy, user_agent, task_id):
+def claim_task_reward(token, headers, proxy, task_id):
     url = "https://api.infinityg.ai/api/v1/task/claim"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": user_agent,
-        "Origin": "https://www.infinityg.ai",
-        "Referer": "https://www.infinityg.ai/",
-        "Content-Type": "application/json",
-    }
+    auth_headers = headers.copy()
+    auth_headers["Authorization"] = f"Bearer {token}"
+    
     payload = {"taskId": task_id}
-    proxies = {}
-    if proxy:
-        if proxy.startswith('http'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
-        elif proxy.startswith('socks4') or proxy.startswith('socks5'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
+    proxies = format_proxy(proxy)
+    
     try:
-        response = requests.post(url, headers=headers, json=payload, proxies=proxies if proxy else None)
+        response = requests.post(url, headers=auth_headers, json=payload, proxies=proxies)
         if response.status_code == 200:
             return response.json()
         else:
@@ -196,25 +228,15 @@ def claim_task_reward(token, proxy, user_agent, task_id):
         return None
 
 # Check-in function
-def perform_checkin(token, proxy, user_agent):
+def perform_checkin(token, headers, proxy):
     url = "https://api.infinityg.ai/api/v1/task/checkIn/"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": user_agent,
-        "Origin": "https://www.infinityg.ai",
-        "Referer": "https://www.infinityg.ai/",
-        "Content-Type": "application/json",
-    }
-    proxies = {}
-    if proxy:
-        if proxy.startswith('http'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
-        elif proxy.startswith('socks4') or proxy.startswith('socks5'):
-            proxies['http'] = proxy
-            proxies['https'] = proxy
+    auth_headers = headers.copy()
+    auth_headers["Authorization"] = f"Bearer {token}"
+    
+    proxies = format_proxy(proxy)
+    
     try:
-        response = requests.post(url, headers=headers, proxies=proxies if proxy else None)
+        response = requests.post(url, headers=auth_headers, proxies=proxies)
         if response.status_code == 200:
             return response.json()
         else:
@@ -273,47 +295,33 @@ def display_checkin_status(task_list):
 # Main function
 def main():
     rainbow_banner()
-    tokens = load_tokens()
-    proxies = load_proxies()
-    user_agents = {}
-    headers_dict = load_headers()
-
-    for idx, token in enumerate(tokens):
-        print(Fore.CYAN + f"Processing account {idx + 1}")
-
-        # Assign a proxy if available and remove it from the list
-        if proxies:
-            proxy = proxies.pop(0)
-            save_proxies(proxies)
-        else:
-            proxy = None
-
-        print(Fore.CYAN + f"Using Proxy: {proxy}")
-
-        # Generate or reuse User-Agent
-        if token not in user_agents:
-            user_agents[token] = generate_user_agent()
-        user_agent = user_agents[token]
-
-        # Create headers for the token
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "User-Agent": user_agent,
-            "Origin": "https://www.infinityg.ai",
-            "Referer": "https://www.infinityg.ai/",
-        }
-        headers_dict[token] = headers
-
-        # Save updated headers
-        save_headers(headers_dict)
-
+    private_keys = load_private_keys()
+    
+    for idx, private_key in enumerate(private_keys):
+        print(Fore.CYAN + f"Processing account {idx + 1}/{len(private_keys)}")
+        
+        # Get random proxy
+        proxy = get_proxy()
+        
+        # Login with wallet and get token
+        token, wallet_address, headers = login_and_get_token(private_key)
+        
+        if not token:
+            print(Fore.RED + "Failed to authenticate. Skipping this account.")
+            # Add delay before next account
+            delay = random.randint(1, 7)
+            print(Fore.YELLOW + f"Waiting before next account...")
+            display_countdown(delay)
+            print(Fore.CYAN + "━" * 50)
+            continue
+        
         # Fetch user info
-        user_info = get_user_info(token, proxy, user_agent)
+        user_info = get_user_info(token, headers, proxy)
         if user_info:
             display_user_info(user_info)
-
+        
         # Fetch task list
-        task_list = get_task_list(token, proxy, user_agent)
+        task_list = get_task_list(token, headers, proxy)
         
         # Check-in process
         if task_list and task_list.get("code") == "90000":
@@ -324,14 +332,14 @@ def main():
                 print(Fore.GREEN + "Already checked in today!")
             else:
                 print(Fore.YELLOW + "Performing daily check-in...")
-                check_in_result = perform_checkin(token, proxy, user_agent)
+                check_in_result = perform_checkin(token, headers, proxy)
                 if check_in_result and check_in_result.get("code") == "90000":
                     print(Fore.GREEN + "Check-in successful!")
                     # Delay after check-in
                     checkin_delay = random.randint(2, 5)
                     display_countdown(checkin_delay)
                     # Refresh task list to show updated check-in status
-                    task_list = get_task_list(token, proxy, user_agent)
+                    task_list = get_task_list(token, headers, proxy)
                     if task_list and task_list.get("code") == "90000":
                         display_checkin_status(task_list)
                 else:
@@ -339,41 +347,45 @@ def main():
         
         # Process tasks
         if task_list and task_list.get("code") == "90000":
-            for task_group in task_list["data"]["taskModelResponses"]:
-                print(Fore.MAGENTA + f"Task Group: {task_group['taskModelName']}")
-                for task in task_group["taskResponseList"]:
-                    if task["status"] == 0:  # Only process incomplete tasks
-                        print(Fore.YELLOW + f"Task: {task['taskName']} (ID: {task['taskId']})")
-                        print(Fore.YELLOW + f"Description: {task['taskDesc']}")
-                        print(Fore.YELLOW + f"Reward: {task['taskReward']} points")
-                        # Complete task
-                        complete_response = complete_task(token, proxy, user_agent, task["taskId"])
-                        if complete_response and complete_response.get("code") == "90000":
-                            print(Fore.GREEN + "Task completed successfully!")
-                            # Add delay before claiming
-                            claim_delay = random.randint(1, 7)
-                            print(Fore.YELLOW + f"Waiting to claim reward...")
-                            display_countdown(claim_delay)
-                            # Claim task reward
-                            claim_response = claim_task_reward(token, proxy, user_agent, task["taskId"])
-                            if claim_response and claim_response.get("code") == "90000":
-                                print(Fore.GREEN + "Reward claimed successfully!")
+            if "taskModelResponses" in task_list["data"]:
+                for task_group in task_list["data"]["taskModelResponses"]:
+                    print(Fore.MAGENTA + f"Task Group: {task_group['taskModelName']}")
+                    for task in task_group["taskResponseList"]:
+                        if task["status"] == 0:  # Only process incomplete tasks
+                            print(Fore.YELLOW + f"Task: {task['taskName']} (ID: {task['taskId']})")
+                            print(Fore.YELLOW + f"Description: {task['taskDesc']}")
+                            print(Fore.YELLOW + f"Reward: {task['taskReward']} points")
+                            # Complete task
+                            complete_response = complete_task(token, headers, proxy, task["taskId"])
+                            if complete_response and complete_response.get("code") == "90000":
+                                print(Fore.GREEN + "Task completed successfully!")
+                                # Add delay before claiming
+                                claim_delay = random.randint(1, 7)
+                                print(Fore.YELLOW + f"Waiting to claim reward...")
+                                display_countdown(claim_delay)
+                                # Claim task reward
+                                claim_response = claim_task_reward(token, headers, proxy, task["taskId"])
+                                if claim_response and claim_response.get("code") == "90000":
+                                    print(Fore.GREEN + "Reward claimed successfully!")
+                                else:
+                                    print(Fore.RED + "Failed to claim reward.")
                             else:
-                                print(Fore.RED + "Failed to claim reward.")
+                                print(Fore.RED + "Failed to complete task.")
+                            # Add delay between tasks
+                            task_delay = random.randint(1, 7)
+                            print(Fore.YELLOW + f"Waiting before next task...")
+                            display_countdown(task_delay)
                         else:
-                            print(Fore.RED + "Failed to complete task.")
-                        # Add delay between tasks
-                        task_delay = random.randint(1, 7)
-                        print(Fore.YELLOW + f"Waiting before next task...")
-                        display_countdown(task_delay)
-                    else:
-                        print(Fore.GREEN + f"Task already completed: {task['taskName']}")
-
+                            print(Fore.GREEN + f"Task already completed: {task['taskName']}")
+            else:
+                print(Fore.YELLOW + "No task groups found.")
+        
         # Random delay between accounts
         delay = random.randint(1, 7)
         print(Fore.YELLOW + f"Waiting before next account...")
         display_countdown(delay)
         print(Fore.CYAN + "━" * 50)
+    
     # Random looping delay between 24 hours and 24 hours 77 minutes
     loop_delay = random.randint(86400, 87420)  # 86400 seconds = 24 hours, 87420 seconds = 24 hours 77 minutes
     print(Fore.MAGENTA + f"Next loop in: {time.strftime('%H:%M:%S', time.gmtime(loop_delay))}")
@@ -381,4 +393,12 @@ def main():
 
 if __name__ == "__main__":
     while True:
-        main()
+        try:
+            main()
+        except KeyboardInterrupt:
+            print(Fore.RED + "\nProgram terminated by user.")
+            break
+        except Exception as e:
+            print(Fore.RED + f"An error occurred: {e}")
+            print(Fore.YELLOW + "Restarting program in 60 seconds...")
+            time.sleep(60)
